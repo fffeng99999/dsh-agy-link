@@ -9,6 +9,8 @@
 // GET  /plugins/agy-link/proxy-pool  → { urls, probeMs, current, path }
 // POST /plugins/agy-link/proxy-pool  ← { urls, probeMs }
 // GET  /plugins/agy-link/proxy-ui    → the editor
+// POST /plugins/agy-link/open-proxy-ui ← { origin }  (opens the editor in the OS browser)
+import { spawn } from 'node:child_process'
 import { proxyRotationFor, proxySettingsPath, proxyTarget, readProxySettings, writeProxySettings, DEFAULT_PROXY_PROBE_MS } from './proxy-pool.ts'
 import { isDirectProxy } from '../common/proxy-list.ts'
 
@@ -38,6 +40,48 @@ function writeHtml(res: unknown, html: string): void {
   const raw = res as RawResponse
   raw.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
   raw.end(html)
+}
+
+/**
+ * Build the editor URL from the origin the browser reports.
+ *
+ * Loopback only: this string is handed to the OS opener, so anything that is
+ * not `http(s)://127.0.0.1|localhost|::1:<port>` is refused rather than
+ * forwarded. The path is fixed, so the caller cannot smuggle one in.
+ */
+export function editorUrlFor(origin: unknown): string | null {
+  if (typeof origin !== 'string' || origin.trim() === '') return null
+  let parsed: URL
+  try {
+    parsed = new URL(origin.trim())
+  } catch {
+    return null
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null
+  const host = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (host !== '127.0.0.1' && host !== 'localhost' && host !== '::1') return null
+  return parsed.origin + '/plugins/agy-link/proxy-ui'
+}
+
+/**
+ * Hand a URL to the OS default browser.
+ *
+ * The DSH desktop shell is an Electron webview with no window-open handler, so
+ * `window.open` from the client silently does nothing (the first version of the
+ * settings link did exactly that and was dead on click). The host can always
+ * spawn the platform opener instead.
+ */
+export function openInBrowser(url: string): boolean {
+  const isWin = process.platform === 'win32'
+  const file = isWin ? process.env.ComSpec ?? 'cmd.exe' : process.platform === 'darwin' ? 'open' : 'xdg-open'
+  const args: string[] = isWin ? ['/d', '/s', '/c', 'start', '', url] : [url]
+  try {
+    const child = spawn(file, args, { windowsHide: true, detached: true, stdio: 'ignore' })
+    child.unref()
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Validate one submitted list; returns an error string or the normalized list. */
@@ -107,6 +151,27 @@ export function registerProxyRoutes(deps: ProxyRouteDeps): void {
     path: '/plugins/agy-link/proxy-ui',
     handler: (_req, res) => {
       writeHtml(res, PROXY_UI_HTML.replaceAll('__DEFAULT_PROBE_MS__', String(DEFAULT_PROXY_PROBE_MS)))
+    },
+  })
+
+  deps.reg({
+    kind: 'exact',
+    path: '/plugins/agy-link/open-proxy-ui',
+    handler: (req, res) => {
+      void (async () => {
+        if (deps.methodOf(req) !== 'POST') {
+          writeJson(res, 405, { ok: false, error: 'POST only' })
+          return
+        }
+        const body = await deps.readBody(req)
+        const url = editorUrlFor(body.origin)
+        if (url === null) {
+          writeJson(res, 400, { ok: false, error: 'origin must be a loopback http(s) URL' })
+          return
+        }
+        const opened = openInBrowser(url)
+        writeJson(res, opened ? 200 : 500, { ok: opened, url })
+      })()
     },
   })
 }

@@ -2179,7 +2179,21 @@ h('div', { key: 'agy-body', style: S.quotaBox },
 							style: { color: 'var(--agy-text-link, #6ea8fe)', fontSize: '12px', textDecoration: 'none' },
 							onClick: (e: { preventDefault?: () => void }) => {
 								e.preventDefault?.();
-								win.open?.(proxyUiHref(), '_blank');
+								// The Electron webview installs no window-open handler, so
+								// window.open is a silent no-op here. Ask the host to spawn
+								// the OS opener instead, and only fall back to window.open.
+								void (async () => {
+									try {
+										const res = await win.fetch?.('/plugins/agy-link/open-proxy-ui', {
+											method: 'POST',
+											headers: { 'Content-Type': 'application/json' },
+											body: JSON.stringify({ origin: win.location?.origin ?? '' }),
+										});
+										if (!res || !res.ok) win.open?.(proxyUiHref(), '_blank');
+									} catch {
+										win.open?.(proxyUiHref(), '_blank');
+									}
+								})();
 							},
 						}, '代理故障转移设置 / Proxy failover →'),
 					),

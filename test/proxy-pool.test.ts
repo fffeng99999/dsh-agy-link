@@ -19,7 +19,7 @@ import {
   resetProxyRotations,
   type ProxySettings,
 } from '../src/host/proxy-pool.ts'
-import { registerProxyRoutes } from '../src/host/proxy-ui.ts'
+import { editorUrlFor, registerProxyRoutes } from '../src/host/proxy-ui.ts'
 
 const SETTINGS: ProxySettings = { urls: [], probeMs: 200 }
 
@@ -317,4 +317,48 @@ test('proxy-ui route: serves the editor with the default probe budget inlined', 
   assert.match(res.body, /代理故障转移/)
   assert.ok(!res.body.includes('__DEFAULT_PROBE_MS__'))
   assert.ok(res.body.includes(String(DEFAULT_PROXY_PROBE_MS)))
+})
+
+test('editorUrlFor builds the editor URL from a loopback origin', () => {
+  assert.equal(
+    editorUrlFor('http://127.0.0.1:13320'),
+    'http://127.0.0.1:13320/plugins/agy-link/proxy-ui',
+  )
+  assert.equal(
+    editorUrlFor('http://localhost:9211/'),
+    'http://localhost:9211/plugins/agy-link/proxy-ui',
+  )
+  // A path in the reported origin must not survive: the editor path is fixed.
+  assert.equal(
+    editorUrlFor('http://127.0.0.1:13320/some/deep/route'),
+    'http://127.0.0.1:13320/plugins/agy-link/proxy-ui',
+  )
+})
+
+test('editorUrlFor refuses anything that is not a loopback http(s) origin', () => {
+  for (const origin of [
+    'http://evil.example.com',
+    'https://10.0.0.2:8443',
+    'file:///C:/Windows',
+    'javascript:alert(1)',
+    '',
+    '   ',
+    undefined,
+    null,
+    42,
+  ]) {
+    assert.equal(editorUrlFor(origin), null, String(origin))
+  }
+})
+
+test('open-proxy-ui route: POST only, and only for a loopback origin', async () => {
+  const wrongMethod = await call(routeHarness('GET'), '/plugins/agy-link/open-proxy-ui')
+  assert.equal(wrongMethod.status, 405)
+
+  const badOrigin = await call(
+    routeHarness('POST', { origin: 'http://evil.example.com' }),
+    '/plugins/agy-link/open-proxy-ui',
+  )
+  assert.equal(badOrigin.status, 400)
+  assert.equal((JSON.parse(badOrigin.body) as { ok: boolean }).ok, false)
 })
