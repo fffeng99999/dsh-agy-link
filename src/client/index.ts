@@ -38,6 +38,9 @@ const win = globalThis as unknown as {
 	removeEventListener?: (type: string, listener: (ev: any) => void, useCapture?: boolean) => void;
 };
 
+/** Absolute URL of the host-served proxy failover editor (same origin as the GUI). */
+const proxyUiHref = (): string => `${win.location?.origin ?? ''}/plugins/agy-link/proxy-ui`;
+
 const portalToBody = (node: unknown) => {
 	const body = win.document?.body ?? (typeof document !== 'undefined' ? document.body : null);
 	if (body && reactDom && typeof reactDom.createPortal === 'function') {
@@ -2166,6 +2169,19 @@ h('div', { key: 'agy-body', style: S.quotaBox },
 								}),
 							),
 						h('span', { style: S.muted }, t('models.hint')),
+					),
+					h('div', { style: { marginTop: '10px', paddingTop: '10px', borderTop: '1px solid var(--agy-border-card)' } },
+						h('a', {
+							href: proxyUiHref(),
+							target: '_blank',
+							rel: 'noreferrer',
+							title: proxyUiHref(),
+							style: { color: 'var(--agy-text-link, #6ea8fe)', fontSize: '12px', textDecoration: 'none' },
+							onClick: (e: { preventDefault?: () => void }) => {
+								e.preventDefault?.();
+								win.open?.(proxyUiHref(), '_blank');
+							},
+						}, '代理故障转移设置 / Proxy failover →'),
 					),
 				),
 			),
