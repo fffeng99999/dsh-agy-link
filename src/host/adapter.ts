@@ -19,7 +19,7 @@ import { StreamJsonParser } from './parser.ts'
 import { defaultMediaDir, stageImages, type ImageRefLike } from './media.ts'
 import { ensureIsolatedKeychain, isolatedHomeEnv, proxyEnvFor, startAgyProcess, buildStreamInputLine, shouldUsePromptStdin, stripNulBytes } from './runner.ts'
 import { detectSystemProxy } from './wincred.ts'
-import { proxyCandidates, proxyRotationFor } from './proxy-pool.ts'
+import { pickProxy } from './proxy-pool.ts'
 import { AbortedWaitError, WaitTimeoutError, acquireCredentialSlot, credentialSlotMutex, SlotUnavailableError } from './credential-slot.ts'
 import { agyHomeDirFor, readAgyRunLogText, snapshotAgyLogs } from './agy-log.ts'
 import { stateDir } from '../common/config.ts'
@@ -1679,12 +1679,12 @@ export class AgyAdapter extends LlmAdapter {
     // network; only this log separates the two.
     const runLogHome = agyHomeDirFor(account)
     const runLogsBefore = snapshotAgyLogs(runLogHome)
-    // Ordered failover: probe the configured hops and spawn on the first
-    // reachable one. A dedicated account proxy still wins, and with no
-    // `proxyUrls` the list collapses to the old single-URL resolution (see
-    // proxyCandidates), so existing installs behave exactly as before.
-    const proxyRotation = proxyRotationFor(proxyCandidates(cfg, account?.proxyUrl))
-    const effectiveProxy = await proxyRotation.pick(cfg.proxyProbeMs)
+    // Proxy hop for this spawn: dedicated account proxy → failover list
+    // (DSH_AGY_PROXY_URLS / proxy-pool.json) → configured proxyUrl → system
+    // proxy. The list is probed here, so a hop that is not running right now is
+    // skipped instead of dialled. See host/proxy-pool.ts — that module owns the
+    // whole feature; this is its only call site.
+    const effectiveProxy = await pickProxy(account?.proxyUrl, cfg.proxyUrl)
     const env = {
       ...process.env,
       ...(cfg.disableTelemetry
@@ -1956,14 +1956,6 @@ export class AgyAdapter extends LlmAdapter {
       if (failure !== null) {
         if (failure.code === Err.NETWORK) {
           failure.retryAfterMs = networkRetryDelayMs(this.noteNetworkFailure(sessionKey))
-          // The hop that just failed is not necessarily the one the retry should
-          // use: with proxyUrls configured, move the cursor so the automatic
-          // retry probes the next candidate first instead of dialling the same
-          // dead hop again.
-          if (proxyRotation.list.length > 1) {
-            const nextHop = proxyRotation.advance()
-            this.deps.log?.('agy transport failure — next proxy hop for the retry: ' + (nextHop ?? 'direct'))
-          }
         } else {
           this.clearNetworkStreak(sessionKey)
         }

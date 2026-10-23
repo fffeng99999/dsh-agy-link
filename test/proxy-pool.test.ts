@@ -1,18 +1,23 @@
-// Proxy failover: list parsing, hop probing, cursor rotation and the config
-// precedence that keeps the single-URL installs unchanged.
+// Proxy failover: list parsing, hop probing, cursor rotation, settings
+// resolution and the precedence that keeps single-URL installs unchanged.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
 import { isDirectProxy, parseProxyList } from '../src/common/proxy-list.ts'
-import { defaultConfig } from '../src/common/types.ts'
 import {
+  DEFAULT_PROXY_PROBE_MS,
   ProxyRotation,
+  pickProxy,
   probeProxy,
   proxyCandidates,
   proxyRotationFor,
   proxyTarget,
+  readProxySettings,
   resetProxyRotations,
+  type ProxySettings,
 } from '../src/host/proxy-pool.ts'
+
+const SETTINGS: ProxySettings = { urls: [], probeMs: 200 }
 
 /** A port that was listening a moment ago and is closed now. */
 async function closedPort(): Promise<number> {
@@ -109,7 +114,7 @@ test('ProxyRotation picks the first reachable hop', async () => {
   }
 })
 
-test('ProxyRotation advance wraps and drops probe trust for the failed hop', async () => {
+test('ProxyRotation advance wraps around', () => {
   const rotation = new ProxyRotation(['http://a:1', 'http://b:2'])
   assert.equal(rotation.current(), 'http://a:1')
   assert.equal(rotation.advance(), 'http://b:2')
@@ -133,25 +138,54 @@ test('proxyRotationFor caches per candidate list', () => {
   assert.notEqual(proxyRotationFor(['http://a:1', '']), first)
 })
 
-test('proxyCandidates: a dedicated account proxy wins over everything', () => {
-  const cfg = { ...defaultConfig(), proxyUrl: 'http://global:1', proxyUrls: ['http://list:1'] }
-  assert.deepEqual(proxyCandidates(cfg, 'http://account:1'), ['http://account:1'])
+test('readProxySettings: the env list wins and keeps the DIRECT sentinel', () => {
+  const settings = readProxySettings({ DSH_AGY_PROXY_URLS: 'http://127.0.0.1:20122,' } as NodeJS.ProcessEnv)
+  assert.deepEqual(settings.urls, ['http://127.0.0.1:20122', ''])
 })
 
-test('proxyCandidates: the list wins over the single proxyUrl', () => {
-  const cfg = { ...defaultConfig(), proxyUrl: 'http://global:1', proxyUrls: ['http://list:1', ''] }
-  assert.deepEqual(proxyCandidates(cfg), ['http://list:1', ''])
+test('readProxySettings: probe budget comes from the env', () => {
+  const settings = readProxySettings({ DSH_AGY_PROXY_PROBE_MS: '2500' } as NodeJS.ProcessEnv)
+  assert.equal(settings.probeMs, 2_500)
+})
+
+test('readProxySettings: unusable values fall back to the default budget', () => {
+  for (const raw of ['', '   ', 'abc', '0', '-5']) {
+    const settings = readProxySettings({ DSH_AGY_PROXY_PROBE_MS: raw } as NodeJS.ProcessEnv)
+    assert.equal(settings.probeMs, DEFAULT_PROXY_PROBE_MS)
+  }
+})
+
+test('proxyCandidates: a dedicated account proxy wins over everything', () => {
+  const settings: ProxySettings = { urls: ['http://list:1'], probeMs: 200 }
+  assert.deepEqual(proxyCandidates(settings, 'http://account:1', 'http://single:1'), ['http://account:1'])
+})
+
+test('proxyCandidates: the failover list wins over the single proxyUrl', () => {
+  const settings: ProxySettings = { urls: ['http://list:1', ''], probeMs: 200 }
+  assert.deepEqual(proxyCandidates(settings, undefined, 'http://single:1'), ['http://list:1', ''])
 })
 
 test('proxyCandidates: a single proxyUrl still works on its own', () => {
-  const cfg = { ...defaultConfig(), proxyUrl: 'http://global:1' }
-  assert.deepEqual(proxyCandidates(cfg), ['http://global:1'])
+  assert.deepEqual(proxyCandidates(SETTINGS, undefined, 'http://single:1'), ['http://single:1'])
 })
 
-test('proxyCandidates: an unconfigured install falls through to the system proxy', () => {
-  // Whatever the host has (or has not) configured, the result stays a single
-  // hop at most — the pre-existing single-URL behaviour.
-  const list = proxyCandidates({ ...defaultConfig() })
-  assert.ok(Array.isArray(list))
-  assert.ok(list.length <= 1)
+test('pickProxy resolves through the list and skips the dead hop', async () => {
+  resetProxyRotations()
+  const port = await closedPort()
+  const settings: ProxySettings = { urls: ['http://127.0.0.1:' + port, ''], probeMs: 300 }
+  assert.equal(await pickProxy(undefined, undefined, settings), undefined)
+})
+
+test('pickProxy prefers an account proxy without touching the list', async () => {
+  resetProxyRotations()
+  const open = await openPort()
+  try {
+    const settings: ProxySettings = { urls: [''], probeMs: 300 }
+    assert.equal(
+      await pickProxy('http://127.0.0.1:' + open.port, undefined, settings),
+      'http://127.0.0.1:' + open.port,
+    )
+  } finally {
+    await open.close()
+  }
 })

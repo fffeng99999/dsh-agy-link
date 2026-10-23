@@ -1,25 +1,83 @@
-// Ordered proxy failover for agy spawns.
+// Ordered proxy failover for agy spawns — self-contained on purpose.
 //
-// agy is a Go binary: it honours HTTP(S)_PROXY / ALL_PROXY and nothing else, and
-// a GUI host (DSH Desktop) does not inherit shell proxy env, so the plugin has
-// to inject the hop itself. One fixed hop breaks the moment that hop stops
-// existing — local client switched off, router-level proxy instead, VPN down —
-// and the turn then dies on a dead port after the print-mode timeout.
+// This file is the whole feature: it reads its own configuration, probes the
+// hops and hands back the URL to spawn with. Nothing upstream had to grow a
+// config key for it, which keeps `git merge upstream/main` cheap — the only
+// edit outside this module is the single `pickProxy(...)` call site.
 //
-// `proxyUrls` gives the spawn path an ordered candidate list: the first hop that
-// answers a TCP probe wins, and a transport failure advances the cursor so the
-// automatic retry runs on the next hop instead of dialling the same dead one.
-// An empty entry ("") is DIRECT and always answers.
+// Why it exists: agy is a Go binary that honours HTTP(S)_PROXY / ALL_PROXY and
+// nothing else, and a GUI host (DSH Desktop) inherits no shell proxy env, so
+// the plugin has to inject the hop itself. One fixed hop breaks the moment that
+// hop is only intermittent — local client switched off, router-level proxy
+// instead, VPN dropped — and the turn then dies on a dead port after the
+// print-mode timeout, with the only remedy being a hand-edited config.
+//
+// Configuration (first match wins, no upstream config key involved):
+//   1. env `DSH_AGY_PROXY_URLS`  — "http://127.0.0.1:20122,"
+//   2. env `DSH_AGY_PROXY_PROBE_MS`
+//   3. `<stateDir>/proxy-pool.json` — { "urls": ["http://127.0.0.1:20122", ""], "probeMs": 1200 }
+// An empty entry ("") is DIRECT and always answers, so
+// `["http://127.0.0.1:20122", ""]` reads as "local client when it runs, plain
+// routing when it does not".
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { connect, type Socket } from 'node:net'
-import type { PluginConfig } from '../common/types.ts'
-import { isDirectProxy } from '../common/proxy-list.ts'
+import { stateDir } from '../common/config.ts'
+import { isDirectProxy, parseProxyList } from '../common/proxy-list.ts'
 import { detectSystemProxy } from './wincred.ts'
 
 /** Default TCP probe budget per hop. Local loopback answers in microseconds. */
 export const DEFAULT_PROXY_PROBE_MS = 1_200
 
-/** How long a successful probe is trusted before it is re-checked. */
-const PROBE_TRUST_MS = 60_000
+export interface ProxySettings {
+  /** Ordered hops; an empty string entry means DIRECT. */
+  readonly urls: readonly string[]
+  /** TCP probe budget per hop (ms). */
+  readonly probeMs: number
+}
+
+/** `<stateDir>/proxy-pool.json` — the file form of the same two settings. */
+export function proxySettingsPath(): string {
+  return join(stateDir(), 'proxy-pool.json')
+}
+
+function readSettingsFile(): Partial<ProxySettings> {
+  try {
+    const raw = JSON.parse(readFileSync(proxySettingsPath(), 'utf8')) as {
+      urls?: unknown
+      probeMs?: unknown
+    }
+    const urls = Array.isArray(raw.urls)
+      ? parseProxyList(raw.urls.filter((x): x is string => typeof x === 'string').join(','))
+      : undefined
+    const probeMs =
+      typeof raw.probeMs === 'number' && Number.isFinite(raw.probeMs) && raw.probeMs > 0
+        ? raw.probeMs
+        : undefined
+    return { urls, probeMs }
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Resolve the failover configuration. Read on every call (cheap: one env lookup,
+ * and a file read only when the env is silent), so editing either source takes
+ * effect on the next spawn without a plugin reload.
+ */
+export function readProxySettings(env: NodeJS.ProcessEnv = process.env): ProxySettings {
+  const file = readSettingsFile()
+  const envList = env.DSH_AGY_PROXY_URLS
+  const urls = envList !== undefined && envList.trim() !== ''
+    ? parseProxyList(envList)
+    : file.urls ?? []
+  const envProbe = env.DSH_AGY_PROXY_PROBE_MS
+  const parsedProbe = envProbe !== undefined && envProbe.trim() !== '' ? Number(envProbe) : Number.NaN
+  const probeMs = Number.isFinite(parsedProbe) && parsedProbe > 0
+    ? parsedProbe
+    : file.probeMs ?? DEFAULT_PROXY_PROBE_MS
+  return { urls, probeMs }
+}
 
 /** Parse `scheme://host:port` into a TCP target. Returns null for unusable entries. */
 export function proxyTarget(url: string): { host: string; port: number } | null {
@@ -46,7 +104,7 @@ export function proxyTarget(url: string): { host: string; port: number } | null 
  * DIRECT ("") is always reachable. A malformed entry is never reachable, so it
  * cannot wedge every spawn behind a probe timeout. The probe only answers "is
  * something listening there" — it does not speak HTTP or SOCKS, which keeps it
- * protocol-agnostic and cheap enough to run before a spawn.
+ * protocol-agnostic and cheap enough to run before every spawn.
  */
 export function probeProxy(url: string, timeoutMs: number): Promise<boolean> {
   if (isDirectProxy(url)) return Promise.resolve(true)
@@ -82,14 +140,13 @@ export function probeProxy(url: string, timeoutMs: number): Promise<boolean> {
 /**
  * Cursor over an ordered hop list.
  *
- * `pick()` is what a spawn calls: it returns the first hop that answers, starting
- * from the cursor, and remembers the cursor so the next spawn starts there.
- * `advance()` is what a transport failure calls: it drops the failed hop's probe
- * trust and moves on, so the retry probes the next candidate first.
+ * `pick()` is what a spawn calls: it returns the first hop that answers,
+ * starting from the cursor, and remembers the cursor so the next spawn starts
+ * there. Because every spawn re-probes, a hop that disappeared (local client
+ * switched off) is skipped on the very next turn without any config edit.
  */
 export class ProxyRotation {
   private index = 0
-  private readonly verified = new Map<string, number>()
 
   constructor(private readonly candidates: readonly string[]) {}
 
@@ -112,35 +169,25 @@ export class ProxyRotation {
   advance(): string | undefined {
     const size = this.candidates.length
     if (size === 0) return undefined
-    const failed = this.candidates[this.index]
-    if (failed !== undefined) this.verified.delete(failed)
     this.index = (this.index + 1) % size
     return this.current()
   }
 
   /**
-   * First reachable hop from the cursor. Recently verified hops skip the probe.
-   * When nothing answers, the current hop is returned anyway: agy then reports
-   * the real transport error instead of the plugin inventing one.
+   * First reachable hop from the cursor. When nothing answers, the current hop
+   * is returned anyway: agy then reports the real transport error instead of
+   * the plugin inventing one.
    */
-  async pick(probeMs: number = DEFAULT_PROXY_PROBE_MS, trustMs: number = PROBE_TRUST_MS): Promise<string | undefined> {
+  async pick(probeMs: number = DEFAULT_PROXY_PROBE_MS): Promise<string | undefined> {
     const size = this.candidates.length
     if (size === 0) return undefined
-    const now = Date.now()
     for (let step = 0; step < size; step++) {
       const index = (this.index + step) % size
       const entry = this.candidates[index] as string
-      const seen = this.verified.get(entry)
-      if (seen !== undefined && now - seen < trustMs) {
-        this.index = index
-        return isDirectProxy(entry) ? undefined : entry
-      }
       if (await probeProxy(entry, probeMs)) {
-        this.verified.set(entry, Date.now())
         this.index = index
         return isDirectProxy(entry) ? undefined : entry
       }
-      this.verified.delete(entry)
     }
     return this.current()
   }
@@ -160,7 +207,7 @@ export function proxyRotationFor(candidates: readonly string[]): ProxyRotation {
   return rotation
 }
 
-/** Drop every cached rotation (tests, or a config change that rewrites the list). */
+/** Drop every cached rotation (tests, or a deliberate reset). */
 export function resetProxyRotations(): void {
   rotations.clear()
 }
@@ -169,17 +216,33 @@ export function resetProxyRotations(): void {
  * Effective hop list for one spawn.
  *
  * Precedence is unchanged from the single-URL era — a dedicated account proxy
- * wins, then the configured list, then the single `proxyUrl`, then the detected
- * system proxy — so an existing install behaves exactly as before until
- * `proxyUrls` is set.
+ * wins, then the failover list, then the single configured `proxyUrl`, then the
+ * detected system proxy — so an existing install behaves exactly as before
+ * until a list is configured.
  */
-export function proxyCandidates(cfg: PluginConfig, accountProxy?: string): string[] {
+export function proxyCandidates(
+  settings: ProxySettings,
+  accountProxy?: string,
+  singleProxy?: string,
+): string[] {
   const dedicated = (accountProxy ?? '').trim()
   if (dedicated !== '') return [dedicated]
-  const configured = (cfg.proxyUrls ?? []).filter((entry) => typeof entry === 'string')
-  if (configured.length > 0) return [...configured]
-  const single = (cfg.proxyUrl ?? '').trim()
+  if (settings.urls.length > 0) return [...settings.urls]
+  const single = (singleProxy ?? '').trim()
   if (single !== '') return [single]
   const system = detectSystemProxy()
   return system !== undefined && system.trim() !== '' ? [system.trim()] : []
+}
+
+/**
+ * The one call site the adapter needs: resolve the list, probe it, and return
+ * the hop to spawn with (`undefined` = no proxy env at all).
+ */
+export async function pickProxy(
+  accountProxy?: string,
+  singleProxy?: string,
+  settings: ProxySettings = readProxySettings(),
+): Promise<string | undefined> {
+  const rotation = proxyRotationFor(proxyCandidates(settings, accountProxy, singleProxy))
+  return rotation.pick(settings.probeMs)
 }
