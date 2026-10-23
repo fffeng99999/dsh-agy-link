@@ -3,6 +3,7 @@
 // hot changes and survives restarts; the env is read per call so a changed
 // process environment is honored without reload.
 import { defaultConfig, type PermissionMode, type PluginConfig } from './types.ts'
+import { parseProxyList } from './proxy-list.ts'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -64,6 +65,13 @@ function asStringArray(v: unknown): string[] | undefined {
     out.push(s)
   }
   return out
+}
+
+/** Proxy failover list: accepts an array or a delimited string. */
+function asProxyList(v: unknown): string[] | undefined {
+  if (typeof v === 'string') return parseProxyList(v)
+  if (!Array.isArray(v)) return undefined
+  return parseProxyList(v.filter((x): x is string => typeof x === 'string').join(','))
 }
 
 const MODES: readonly PermissionMode[] = ['skip', 'plan', 'accept-edits']
@@ -132,6 +140,8 @@ export function resolveConfig(
     disableTelemetry: asBool(get('disableTelemetry')) ?? base.disableTelemetry,
     quotaPollIntervalMs: asNum(get('quotaPollIntervalMs')) ?? base.quotaPollIntervalMs,
     proxyUrl: asString(get('proxyUrl')) ?? base.proxyUrl,
+    proxyUrls: asProxyList(get('proxyUrls')) ?? base.proxyUrls,
+    proxyProbeMs: asNum(get('proxyProbeMs')) ?? base.proxyProbeMs,
     suppressAgyAutoUpdate: asBool(get('suppressAgyAutoUpdate')) ?? base.suppressAgyAutoUpdate,
   }
   // Env wins last (spec ADR-13).
@@ -194,6 +204,14 @@ export function resolveConfig(
     if (q && q >= 60_000) cfg.quotaPollIntervalMs = q
   }
   if (env.DSH_AGY_PROXY_URL) cfg.proxyUrl = env.DSH_AGY_PROXY_URL
+  if (env.DSH_AGY_PROXY_URLS) {
+    const list = parseProxyList(env.DSH_AGY_PROXY_URLS)
+    if (list.length > 0) cfg.proxyUrls = list
+  }
+  if (env.DSH_AGY_PROXY_PROBE_MS) {
+    const t = asNum(env.DSH_AGY_PROXY_PROBE_MS)
+    if (t && t > 0) cfg.proxyProbeMs = t
+  }
   if (env.DSH_AGY_SUPPRESS_AUTOUPDATE !== undefined) {
     const sa = asBool(env.DSH_AGY_SUPPRESS_AUTOUPDATE)
     if (sa !== undefined) cfg.suppressAgyAutoUpdate = sa

@@ -25,6 +25,7 @@ import { AccountPoolManager } from './host/pool.ts'
 import { PoolAuthFlow } from './host/pool-auth.ts'
 import { QuotaService } from './host/quota.ts'
 import { detectSystemProxy } from './host/wincred.ts'
+import { proxyCandidates, proxyRotationFor } from './host/proxy-pool.ts'
 import { resolvePrimaryCredential, findDuplicateCredentialIdentities } from './host/credential-slot.ts'
 import { homedir } from 'node:os'
 import { StreamJsonParser } from './host/parser.ts'
@@ -143,7 +144,10 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
   const version = () => versionCache
   const store = new SessionStore(join(stateDir(), 'sessions.json'))
   const pool = new AccountPoolManager()
-  const quota = new QuotaService(pool, () => getConfig().proxyUrl || detectSystemProxy() || '')
+  const quota = new QuotaService(pool, () => {
+    const cfg = getConfig()
+    return proxyRotationFor(proxyCandidates(cfg)).current() ?? ''
+  })
   const semaphore = new Semaphore(() => getConfig().maxConcurrent)
 
   const getDiscoveryEnv = (account?: ManagedAccount): NodeJS.ProcessEnv => {
@@ -159,7 +163,7 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
           }
         : {}),
       ...(account && account.dir ? isolatedHomeEnv(account.dir) : {}),
-      ...proxyEnvFor(account?.proxyUrl || cfg.proxyUrl || detectSystemProxy() || undefined),
+      ...proxyEnvFor(proxyRotationFor(proxyCandidates(cfg, account?.proxyUrl)).current()),
     }
   }
 

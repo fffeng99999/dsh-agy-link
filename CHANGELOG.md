@@ -4,6 +4,12 @@
 
 ### English
 
+- **New: ordered proxy failover (`proxyUrls` / `proxyProbeMs`).**
+  - One fixed `proxyUrl` breaks as soon as the hop is only intermittent — a local client that is switched off for part of the day, a router-level proxy instead, a VPN that drops. agy then dials a dead port and the turn dies on the print-mode timeout, and the only fix was editing the plugin config by hand each time.
+  - `proxyUrls` is an ordered candidate list (comma / semicolon / newline separated, env `DSH_AGY_PROXY_URLS`). An empty entry `""` means DIRECT, which is how "local client when it runs, plain routing when it does not" is written: `["http://127.0.0.1:20122", ""]`.
+  - Before every spawn the plugin TCP-probes the hops (protocol-agnostic, `proxyProbeMs`, default 1200 ms) and spawns on the first reachable one; a hop verified within the last 60 s skips the probe. A malformed entry never answers, so it cannot wedge every spawn behind a timeout.
+  - A `NETWORK`-classified failure advances the cursor and drops that hop's probe trust, so the existing automatic retry (5s → 15s → 30s) probes the next candidate first instead of redialling the dead one.
+  - Precedence is unchanged for existing installs: dedicated account proxy → `proxyUrls` → `proxyUrl` → detected system proxy. With `proxyUrls` empty the behaviour is byte-identical to before; quota polling and model discovery resolve through the same rotation so they do not fall back to a direct connection when only the list is configured.
 - **Fix: Transport failures outlast a real egress outage, and no longer rotate a shared-egress pool.**
   - Live case (2026-10-21 16:34–16:48): the machine's proxy answered `CONNECT 200` and then killed TLS for ~14 minutes. Every `agy` run on every account died in its startup probe with `Post "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": EOF`, which agy wraps as `Eligibility check failed: …`. DSH retried twice inside ~4 seconds and gave up — while the Antigravity desktop's own language server simply kept retrying and recovered.
   - Transport (`NETWORK`) failures now state their own backoff via `providerRetryAfterMs`: **5s → 15s → 30s** for consecutive failures in one session, reset on success or any non-transport failure, and treated as fresh after 10 minutes of quiet. `providerRetryPolicy` grew to 3 retries with `maxDelayMs: 45s` (the retry plugin *drops* a retry whose requested delay exceeds that cap, so it must sit above the longest transport delay).
@@ -12,6 +18,12 @@
 
 ### 中文
 
+- **新增：有序代理故障转移（`proxyUrls` / `proxyProbeMs`）。**
+  - 单个固定 `proxyUrl` 在“代理只是间歇可用”时立刻失效——本机客户端白天开着、晚上关掉改走路由器代理、VPN 掉线。此时 `agy` 会去连一个已经没人监听的端口，整轮卡在 print 模式超时上，而唯一的办法是每次手动改插件配置。
+  - `proxyUrls` 是有序候选列表（逗号 / 分号 / 换行分隔，环境变量 `DSH_AGY_PROXY_URLS`）。空串项 `""` 表示直连，于是“客户端开着时走它、关掉时走路由器”可以写成：`["http://127.0.0.1:20122", ""]`。
+  - 每次 spawn 前按顺序做 TCP 探测（与协议无关，`proxyProbeMs` 默认 1200ms），用第一个可达的跳；60 秒内验证过的跳会跳过探测。格式错误的项永远不可达，因此不会让每次 spawn 都卡在探测超时上。
+  - 归类为 `NETWORK` 的失败会推进游标并清掉该跳的探测信任，于是现有的自动重试（5s → 15s → 30s）会先去探测下一个候选，而不是反复重连那个死掉的跳。
+  - 既有安装的优先级完全不变：账号专属代理 → `proxyUrls` → `proxyUrl` → 探测到的系统代理。`proxyUrls` 为空时行为与之前逐字节一致；配额轮询与模型发现也走同一套轮换，避免只配了列表时它们回落到直连。
 - **修复：网络抖动时重试不再 4 秒内放弃，共用出口的号池不再被无意义轮换。**
   - 实测案例（2026-10-21 16:34–16:48）：本机代理对 `CONNECT` 返回 200 后直接掐断 TLS 长达约 14 分钟。每个账号上每次 `agy` 运行都在启动探测阶段死于 `Post "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": EOF`，被 agy 包成 `Eligibility check failed: …`。DSH 约 4 秒内重试两次即宣告失败，而 Antigravity 桌面端自己的 language server 只是一直重试，网络恢复后照常工作。
   - 传输类（`NETWORK`）失败现在通过 `providerRetryAfterMs` 自带退避：同一会话连续失败按 **5s → 15s → 30s** 递增；成功或出现非传输类失败即归零，静默超过 10 分钟后重新从 5s 起算。`providerRetryPolicy` 提升为 3 次重试、`maxDelayMs: 45s`（重试插件对**超过上限**的请求延迟会直接放弃该次重试，因此上限必须高于最长退避）。

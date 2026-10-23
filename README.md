@@ -50,6 +50,7 @@
 >    ```
 >    *(注：端口 `7890` 请替换为你本地代理软件的实际端口)*
 > 3. **GUI 单账号独立代理**：进入 DSH「设置 → Antigravity」或点击顶部 `AGY` 徽标，点击卡片上的「🌐 代理」按钮，可为特定账号单独配置专属代理 URL（如 `http://127.0.0.1:7890`），实现多账号不同 IP 出口隔离。
+> 4. **代理自动故障转移（`proxyUrls`）**：若代理只是间歇可用（例如本机客户端开着时走 `127.0.0.1:20122`，关掉后走路由器代理），把候选写成有序列表：`["http://127.0.0.1:20122", ""]`（空串 = 直连）。插件每次 spawn 前做 TCP 探测，用第一个可达的跳；运行中若归类为传输失败，会自动切到下一个候选并重试，不需要手动改配置。
 
 ---
 
@@ -152,6 +153,8 @@ dsh plugin --profile web add dsh-agy-link
 | `longToolIdleMinutes` | `DSH_AGY_LONG_TOOL_IDLE_MINUTES` | `240` | 存在未完成工具步骤（ACTIVE）时的空闲预算（分钟）；`0` = 不抬高预算，卡死的工具按 `timeoutMs` 快速失败 |
 | `workspaceRoot` | `DSH_AGY_WORKSPACE_ROOT` | 会话 cwd | agy 工作区根目录（默认跟随当前会话工作区） |
 | `suppressAgyAutoUpdate` | `DSH_AGY_SUPPRESS_AUTOUPDATE` | Windows `true`，其他平台 `false` | 每次 spawn 前刷新 agy 的更新检查时间戳，阻断 `--bg-updater` 子进程链（Windows 闪窗根因）。关闭后 agy 恢复自动更新检查 |
+| `proxyUrls` | `DSH_AGY_PROXY_URLS` | `[]` | 有序代理候选列表（逗号 / 分号 / 换行分隔）。每次 spawn 前 TCP 探测，使用第一个可达的跳；传输失败自动推进游标，重试走下一个候选。空串项 `""` 表示直连。例：`["http://127.0.0.1:20122",""]` |
+| `proxyProbeMs` | `DSH_AGY_PROXY_PROBE_MS` | `1200` | 单个候选的 TCP 探测超时（毫秒） |
 
 ---
 
@@ -330,6 +333,8 @@ dsh plugin --profile web add dsh-agy-link
 | `longToolIdleMinutes` | `DSH_AGY_LONG_TOOL_IDLE_MINUTES` | `240` | Idle budget while a tool step is ACTIVE (minutes); `0` keeps the normal `timeoutMs` budget so wedged tools fail fast |
 | `workspaceRoot` | `DSH_AGY_WORKSPACE_ROOT` | session cwd | Working directory root |
 | `suppressAgyAutoUpdate` | `DSH_AGY_SUPPRESS_AUTOUPDATE` | `true` on Windows, `false` elsewhere | Refreshes agy's update-check timestamp before every spawn so its `--bg-updater` child chain (the Windows console-flash root cause) never starts. `false` restores agy's own auto-update checks |
+| `proxyUrls` | `DSH_AGY_PROXY_URLS` | `[]` | Ordered proxy failover list (comma / semicolon / newline separated). Every spawn probes the hops over TCP and uses the first reachable one; a transport failure advances the cursor so the automatic retry runs on the next hop. An empty entry `""` means DIRECT. Example: `["http://127.0.0.1:20122",""]` |
+| `proxyProbeMs` | `DSH_AGY_PROXY_PROBE_MS` | `1200` | TCP probe budget per hop (ms) |
 
 ---
 

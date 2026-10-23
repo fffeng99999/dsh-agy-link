@@ -110,6 +110,23 @@ export interface PluginConfig {
    */
   proxyUrl: string
   /**
+   * Ordered proxy failover list for agy spawns (`http://` or `socks5://`).
+   *
+   * An empty entry `""` means DIRECT. Before each spawn the plugin probes the
+   * hops in order and uses the first one that answers; a transport failure
+   * (connection refused / dial timeout) advances the cursor, so the automatic
+   * retry runs on the next hop instead of dialling the same dead one.
+   *
+   * The motivating case is a hop that only exists part of the time:
+   * `["http://127.0.0.1:20122", ""]` — the local client when it runs, plain
+   * routing (router-level proxy) when it does not. A dedicated account
+   * `proxyUrl` still wins over this list. Empty array = feature off, behaviour
+   * identical to before.
+   */
+  proxyUrls: readonly string[]
+  /** TCP probe budget per hop when picking one (ms). */
+  proxyProbeMs: number
+  /**
    * Pre-empt agy's built-in auto-updater before every spawn (issue #49).
    *
    * agy >= 1.4.2 ignores AGY_CLI_DISABLE_AUTO_UPDATE for the `--bg-updater`
@@ -197,6 +214,8 @@ export function defaultConfig(): PluginConfig {
     disableTelemetry: true,
     quotaPollIntervalMs: 15 * 60_000,
     proxyUrl: '',
+    proxyUrls: [],
+    proxyProbeMs: 1_200,
     // Windows is where agy's `--bg-updater` grandchild flashes a console
     // window; other platforms keep agy's own update behaviour by default.
     suppressAgyAutoUpdate: process.platform === 'win32',
