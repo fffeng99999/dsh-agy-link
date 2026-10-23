@@ -3,6 +3,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { isDirectProxy, parseProxyList } from '../src/common/proxy-list.ts'
 import {
   DEFAULT_PROXY_PROBE_MS,
@@ -16,6 +19,7 @@ import {
   resetProxyRotations,
   type ProxySettings,
 } from '../src/host/proxy-pool.ts'
+import { registerProxyRoutes } from '../src/host/proxy-ui.ts'
 
 const SETTINGS: ProxySettings = { urls: [], probeMs: 200 }
 
@@ -188,4 +192,129 @@ test('pickProxy prefers an account proxy without touching the list', async () =>
   } finally {
     await open.close()
   }
+})
+
+// ---- HTTP surface used by the in-plugin editor -----------------------------
+
+/** Minimal stand-in for the host's ServerResponse. */
+function fakeRes(): { res: unknown; done: Promise<{ status: number; body: string }> } {
+  let settle: (value: { status: number; body: string }) => void = () => {}
+  const done = new Promise<{ status: number; body: string }>((resolve) => {
+    settle = resolve
+  })
+  let status = 0
+  const res = {
+    writeHead(code: number) {
+      status = code
+    },
+    end(body?: string | Buffer) {
+      settle({ status, body: body === undefined ? '' : String(body) })
+    },
+  }
+  return { res, done }
+}
+
+function routeHarness(method: string, body: Record<string, unknown> = {}) {
+  const handlers = new Map<string, (req: unknown, res: unknown) => void>()
+  registerProxyRoutes({
+    reg: (route) => {
+      handlers.set(route.path, route.handler)
+    },
+    readBody: async () => body,
+    methodOf: () => method,
+  })
+  return handlers
+}
+
+/** Run one request against a route and resolve with its status + body. */
+async function call(
+  handlers: Map<string, (req: unknown, res: unknown) => void>,
+  path: string,
+): Promise<{ status: number; body: string }> {
+  const handler = handlers.get(path)
+  assert.ok(handler, 'route registered: ' + path)
+  const { res, done } = fakeRes()
+  handler({}, res)
+  return done
+}
+
+async function withTempDshHome(run: () => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), 'agy-proxy-home-'))
+  const previousHome = process.env.DSH_HOME
+  const previousList = process.env.DSH_AGY_PROXY_URLS
+  process.env.DSH_HOME = dir
+  delete process.env.DSH_AGY_PROXY_URLS
+  resetProxyRotations()
+  try {
+    await run()
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    if (previousList !== undefined) process.env.DSH_AGY_PROXY_URLS = previousList
+    resetProxyRotations()
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('proxy-pool route: POST persists the list and GET reads it back', async () => {
+  await withTempDshHome(async () => {
+    const saved = await call(
+      routeHarness('POST', { urls: ['http://127.0.0.1:20122', ''], probeMs: 900 }),
+      '/plugins/agy-link/proxy-pool',
+    )
+    assert.equal(saved.status, 200)
+    const savedBody = JSON.parse(saved.body) as { ok: boolean; urls: string[]; probeMs: number }
+    assert.equal(savedBody.ok, true)
+    assert.deepEqual(savedBody.urls, ['http://127.0.0.1:20122', ''])
+    assert.equal(savedBody.probeMs, 900)
+
+    const read = await call(routeHarness('GET'), '/plugins/agy-link/proxy-pool')
+    assert.equal(read.status, 200)
+    const readBody = JSON.parse(read.body) as { urls: string[]; probeMs: number; current: string }
+    assert.deepEqual(readBody.urls, ['http://127.0.0.1:20122', ''])
+    assert.equal(readBody.probeMs, 900)
+    assert.equal(typeof readBody.current, 'string')
+  })
+})
+
+test('proxy-pool route: rejects a list without any usable hop', async () => {
+  await withTempDshHome(async () => {
+    for (const urls of [[], [''], ['   ']]) {
+      const res = await call(routeHarness('POST', { urls }), '/plugins/agy-link/proxy-pool')
+      assert.equal(res.status, 400)
+      const body = JSON.parse(res.body) as { ok: boolean; error: string }
+      assert.equal(body.ok, false)
+      assert.ok(body.error.length > 0)
+    }
+  })
+})
+
+test('proxy-pool route: rejects an unusable proxy URL', async () => {
+  await withTempDshHome(async () => {
+    const res = await call(
+      routeHarness('POST', { urls: ['not-a-url'] }),
+      '/plugins/agy-link/proxy-pool',
+    )
+    assert.equal(res.status, 400)
+    assert.match(JSON.parse(res.body).error as string, /not a usable proxy URL/)
+  })
+})
+
+test('proxy-pool route: clamps the probe budget into the accepted range', async () => {
+  await withTempDshHome(async () => {
+    const res = await call(
+      routeHarness('POST', { urls: ['http://127.0.0.1:20122'], probeMs: 999_999 }),
+      '/plugins/agy-link/proxy-pool',
+    )
+    assert.equal(res.status, 200)
+    assert.equal((JSON.parse(res.body) as { probeMs: number }).probeMs, 30_000)
+  })
+})
+
+test('proxy-ui route: serves the editor with the default probe budget inlined', async () => {
+  const res = await call(routeHarness('GET'), '/plugins/agy-link/proxy-ui')
+  assert.equal(res.status, 200)
+  assert.match(res.body, /代理故障转移/)
+  assert.ok(!res.body.includes('__DEFAULT_PROBE_MS__'))
+  assert.ok(res.body.includes(String(DEFAULT_PROXY_PROBE_MS)))
 })

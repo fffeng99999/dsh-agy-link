@@ -25,6 +25,7 @@ import { AccountPoolManager } from './host/pool.ts'
 import { PoolAuthFlow } from './host/pool-auth.ts'
 import { QuotaService } from './host/quota.ts'
 import { detectSystemProxy } from './host/wincred.ts'
+import { registerProxyRoutes } from './host/proxy-ui.ts'
 import { resolvePrimaryCredential, findDuplicateCredentialIdentities } from './host/credential-slot.ts'
 import { homedir } from 'node:os'
 import { StreamJsonParser } from './host/parser.ts'
@@ -951,6 +952,9 @@ export function apply(ctx: Context, entryConfig: Record<string, unknown> = {}): 
     reg({ kind: 'prefix', path: '/plugins/agy-link/assets', handler: (req, res) => {
       handleAssetRequest(req as HttpRequestLike, res as HttpResponseLike, assetDir)
     }})
+
+    // /plugins/agy-link/proxy-pool (+ /proxy-ui editor) — self-contained module.
+    registerProxyRoutes({ reg, readBody, methodOf })
 
     return () => {
       for (const d of disposers) {

@@ -19,8 +19,8 @@
 // An empty entry ("") is DIRECT and always answers, so
 // `["http://127.0.0.1:20122", ""]` reads as "local client when it runs, plain
 // routing when it does not".
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { connect, type Socket } from 'node:net'
 import { stateDir } from '../common/config.ts'
 import { isDirectProxy, parseProxyList } from '../common/proxy-list.ts'
@@ -77,6 +77,24 @@ export function readProxySettings(env: NodeJS.ProcessEnv = process.env): ProxySe
     ? parsedProbe
     : file.probeMs ?? DEFAULT_PROXY_PROBE_MS
   return { urls, probeMs }
+}
+
+/**
+ * Persist the failover settings to `<stateDir>/proxy-pool.json`.
+ *
+ * Written for the in-plugin editor (see host/proxy-ui.ts); the file stays the
+ * single source of truth, so a hand-edited file and the editor cannot drift.
+ * Resetting the cached rotations makes the next spawn start from the new list.
+ */
+export function writeProxySettings(settings: ProxySettings): void {
+  const path = proxySettingsPath()
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(
+    path,
+    JSON.stringify({ urls: [...settings.urls], probeMs: settings.probeMs }, null, 2) + '\n',
+    'utf8',
+  )
+  resetProxyRotations()
 }
 
 /** Parse `scheme://host:port` into a TCP target. Returns null for unusable entries. */

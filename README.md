@@ -50,7 +50,7 @@
 >    ```
 >    *(注：端口 `7890` 请替换为你本地代理软件的实际端口)*
 > 3. **GUI 单账号独立代理**：进入 DSH「设置 → Antigravity」或点击顶部 `AGY` 徽标，点击卡片上的「🌐 代理」按钮，可为特定账号单独配置专属代理 URL（如 `http://127.0.0.1:7890`），实现多账号不同 IP 出口隔离。
-> 4. **代理自动故障转移**：代理只是间歇可用时（本机客户端开着走 `127.0.0.1:20122`，关掉后走路由器代理），把候选写成有序列表 —— 环境变量 `DSH_AGY_PROXY_URLS="http://127.0.0.1:20122,"`（末尾空项 = 直连），或写进 `~/.dsh/agy-link/proxy-pool.json`：`{"urls":["http://127.0.0.1:20122",""],"probeMs":1200}`。每次 spawn 前做 TCP 探测，第一个可达的跳胜出；已经关掉的那一跳会被跳过，而不是被连接。
+> 4. **代理自动故障转移**：代理只是间歇可用时（本机客户端开着走 `127.0.0.1:20122`，关掉后走路由器代理），把候选写成有序列表 —— 环境变量 `DSH_AGY_PROXY_URLS="http://127.0.0.1:20122,"`（末尾空项 = 直连），或写进 `~/.dsh/agy-link/proxy-pool.json`：`{"urls":["http://127.0.0.1:20122",""],"probeMs":1200}`。每次 spawn 前做 TCP 探测，第一个可达的跳胜出；已经关掉的那一跳会被跳过，而不是被连接。图形化编辑：浏览器打开 `http://127.0.0.1:<DSH 端口>/plugins/agy-link/proxy-ui`，可增删、上下移动、保存。
 
 ---
 
@@ -235,7 +235,7 @@ Bring **Google Antigravity models into DeepSeek Harness (DSH)** — featuring **
 >    export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 ALL_PROXY=socks5://127.0.0.1:7890
 >    ```
 > 3. **Per-Account Dedicated Proxy**: You can also configure a dedicated proxy URL per account directly in DSH Settings → Antigravity by clicking the "🌐 Proxy" button on the account card (e.g. `http://127.0.0.1:7890`).
-> 4. **Proxy failover**: when the hop is only intermittent (local client on `127.0.0.1:20122` while it runs, router-level proxy when it does not), write the candidates as an ordered list — env `DSH_AGY_PROXY_URLS="http://127.0.0.1:20122,"` (trailing empty entry = DIRECT), or `~/.dsh/agy-link/proxy-pool.json`: `{"urls":["http://127.0.0.1:20122",""],"probeMs":1200}`. Every spawn probes the hops over TCP and uses the first reachable one; a hop that is not running is skipped instead of dialled.
+> 4. **Proxy failover**: when the hop is only intermittent (local client on `127.0.0.1:20122` while it runs, router-level proxy when it does not), write the candidates as an ordered list — env `DSH_AGY_PROXY_URLS="http://127.0.0.1:20122,"` (trailing empty entry = DIRECT), or `~/.dsh/agy-link/proxy-pool.json`: `{"urls":["http://127.0.0.1:20122",""],"probeMs":1200}`. Every spawn probes the hops over TCP and uses the first reachable one; a hop that is not running is skipped instead of dialled. Graphical editor: open `http://127.0.0.1:<DSH port>/plugins/agy-link/proxy-ui` — add, remove, reorder, save.
 
 ---
 
